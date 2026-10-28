@@ -405,9 +405,13 @@ void analyze_mpu_data(unsigned int msgid,void * content,unsigned int contentlen)
 		set_no_mpu_msg_time(0);
 		s_last_recv_update_bag_time = GetRunTime();
 
-		ota_write(ptr,contentlen);
+		if (ota_write(ptr,contentlen) != 0)
+		{
+			DBG_Print(LEVEL2,"ota chunk not stored (%uBytes)\r\n",contentlen);
+			break;
+		}
 
-		//next bag
+		//next bag only after the chunk is in flash
 		rlen = tccp_pack(TCCP_FILE_SEND_NEXT_MSG_ID,0,0,sbuf,sizeof(sbuf));
 		send_to_mpu(sbuf,rlen);
 
@@ -416,6 +420,11 @@ void analyze_mpu_data(unsigned int msgid,void * content,unsigned int contentlen)
 
 	case TCCP_FILE_SEND_FINISH_MSG_ID:
 		DBG_Print(LEVEL2,"file send finish(%uBytes)\r\n",get_ota_file_size());
+		if (ota_image_is_valid() == 0)
+		{
+			ota_download_finish();
+			break;
+		}
 		send_shutdown_signal_to_mpu();
 		ota_download_finish();
 	break;
@@ -521,6 +530,11 @@ void analyze_mpu_data(unsigned int msgid,void * content,unsigned int contentlen)
 		{
 			unsigned int value_temp = 0;
 			unsigned int i_count = 0;
+
+			if ((rlen + 4) > contentlen)
+			{
+				break;
+			}
 			D0 = ptr[rlen++];
 			D1 = ptr[rlen++];
 			paramid = (D0 << 8) + D1;
@@ -529,19 +543,25 @@ void analyze_mpu_data(unsigned int msgid,void * content,unsigned int contentlen)
 			D1 = ptr[rlen++];
 			clen = (D0 << 8) + D1;
 
+			/* Value must sit entirely inside the bytes still in this frame. */
+			if ((clen > (xlen - 4)) || ((rlen + clen) > contentlen))
+			{
+				break;
+			}
+
 			switch (paramid)
 			{
 			case PARAM_ID_FROM_MPU_SOFTWARE_VERSION:
 				set_mpu_ver(ptr + rlen,clen);
 			break;
 			case PARAM_ID_FROM_MPU_GPS_SPEED:
-				SetGpsSpeed((ptr[rlen + 0] << 8) + ptr[rlen + 1]);
+				if (clen >= 2) SetGpsSpeed((ptr[rlen + 0] << 8) + ptr[rlen + 1]);
 			break;
 			case PARAM_ID_FROM_MPU_SIM_SIGNAL_STRENGTH:
-				set_sim_signal_strength((ptr[rlen + 0] << 8) + ptr[rlen + 1]);
+				if (clen >= 2) set_sim_signal_strength((ptr[rlen + 0] << 8) + ptr[rlen + 1]);
 			break;
 			case PARAM_ID_FROM_MPU_GAODU:
-				SetGaoDu((ptr[rlen + 0] << 8) + ptr[rlen + 1]);
+				if (clen >= 2) SetGaoDu((ptr[rlen + 0] << 8) + ptr[rlen + 1]);
 			break;
 			case PARAM_ID_FROM_MPU_ANGLE:
 				//SetAngle((ptr[rlen + 0] << 8) + ptr[rlen + 1]);
@@ -552,7 +572,7 @@ void analyze_mpu_data(unsigned int msgid,void * content,unsigned int contentlen)
 				SPSetServerAddr(0,sbuf);
 			break;
 			case PARAM_ID_FROM_MPU_SERVER0_PORT:
-				SPSetServerPort(0,(ptr[rlen + 0] << 8) + ptr[rlen + 1]);
+				if (clen >= 2) SPSetServerPort(0,(ptr[rlen + 0] << 8) + ptr[rlen + 1]);
 			break;
 			case PARAM_ID_FROM_MPU_SERVER1_ADDR:
 				memset(sbuf,0,sizeof(sbuf));
@@ -560,7 +580,7 @@ void analyze_mpu_data(unsigned int msgid,void * content,unsigned int contentlen)
 				SPSetServerAddr(1,sbuf);
 			break;
 			case PARAM_ID_FROM_MPU_SERVER1_PORT:
-				SPSetServerPort(1,(ptr[rlen + 0] << 8) + ptr[rlen + 1]);
+				if (clen >= 2) SPSetServerPort(1,(ptr[rlen + 0] << 8) + ptr[rlen + 1]);
 			break;
 			case PARAM_ID_FROM_MPU_SERVER2_ADDR:
 				memset(sbuf,0,sizeof(sbuf));
@@ -568,7 +588,7 @@ void analyze_mpu_data(unsigned int msgid,void * content,unsigned int contentlen)
 				SPSetServerAddr(2,sbuf);
 			break;
 			case PARAM_ID_FROM_MPU_SERVER2_PORT:
-				SPSetServerPort(2,(ptr[rlen + 0] << 8) + ptr[rlen + 1]);
+				if (clen >= 2) SPSetServerPort(2,(ptr[rlen + 0] << 8) + ptr[rlen + 1]);
 			break;
 			case PARAM_ID_FROM_MPU_SERVER3_ADDR:
 				memset(sbuf,0,sizeof(sbuf));
@@ -576,31 +596,32 @@ void analyze_mpu_data(unsigned int msgid,void * content,unsigned int contentlen)
 				SPSetServerAddr(3,sbuf);
 			break;
 			case PARAM_ID_FROM_MPU_SERVER3_PORT:
-				SPSetServerPort(3,(ptr[rlen + 0] << 8) + ptr[rlen + 1]);
+				if (clen >= 2) SPSetServerPort(3,(ptr[rlen + 0] << 8) + ptr[rlen + 1]);
 			break;
 
 			case PARAM_ID_FROM_MPU_SERVER4_PORT:
-				SPSetServerPort(4,(ptr[rlen + 0] << 8) + ptr[rlen + 1]);
+				if (clen >= 2) SPSetServerPort(4,(ptr[rlen + 0] << 8) + ptr[rlen + 1]);
 			break;
 			case PARAM_ID_FROM_MPU_SERVER5_PORT:
-				SPSetServerPort(5,(ptr[rlen + 0] << 8) + ptr[rlen + 1]);
+				if (clen >= 2) SPSetServerPort(5,(ptr[rlen + 0] << 8) + ptr[rlen + 1]);
 			break;
 			case PARAM_ID_FROM_MPU_SERVER6_PORT:
-				SPSetServerPort(6,(ptr[rlen + 0] << 8) + ptr[rlen + 1]);
+				if (clen >= 2) SPSetServerPort(6,(ptr[rlen + 0] << 8) + ptr[rlen + 1]);
 			break;
 			case PARAM_ID_FROM_MPU_SERVER7_PORT:
-				SPSetServerPort(7,(ptr[rlen + 0] << 8) + ptr[rlen + 1]);
+				if (clen >= 2) SPSetServerPort(7,(ptr[rlen + 0] << 8) + ptr[rlen + 1]);
 			break;
 			case PARAM_ID_FROM_MPU_GET_MCU_PARAM_SW:
-				SetReportStatus(ptr[rlen]);
+				if (clen >= 1) SetReportStatus(ptr[rlen]);
 			break;
 			case PARAM_ID_FROM_MPU_PUBLIC_KEY:
-				memcpy(get_public_key_ptr(),ptr + rlen,64);
+				if (clen >= 64) memcpy(get_public_key_ptr(),ptr + rlen,64);
 			break;
 			case PARAM_ID_FROM_MPU_CHIP_ID:
-				memcpy(get_jiami_chip_id_ptr(),ptr + rlen,16);
+				if (clen >= 16) memcpy(get_jiami_chip_id_ptr(),ptr + rlen,16);
 			break;
 			case PARAM_ID_FROM_MPU_STASTUS1:			//status1
+				if (clen < 4) break;
 				value_temp += ptr[rlen + 0] << 24;
 				value_temp += ptr[rlen + 1] << 16;
 				value_temp += ptr[rlen + 2] << 8;
@@ -668,12 +689,23 @@ void analyze_mpu_data(unsigned int msgid,void * content,unsigned int contentlen)
 		}
 		rlen += 20;
 
+		if (rlen >= contentlen)
+		{
+			break;
+		}
 		templen = ptr[rlen++];
 		if (templen > 20)
 		{
 			templen = 20;
 		}
-		memcpy(get_imei_ptr(),ptr + rlen,templen);
+		if ((rlen + templen) > contentlen)
+		{
+			break;
+		}
+		if (templen)
+		{
+			memcpy(get_imei_ptr(),ptr + rlen,templen);
+		}
 		rlen += templen;
 	break;
 	case TCCP_MPU_ACK_MCU_MSG_ID:

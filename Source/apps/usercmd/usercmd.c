@@ -293,7 +293,7 @@ unsigned int Cmd_Expand(void *content,unsigned int contentlen,void *pOut,unsigne
 
 	if (strstr(ptr,"get_err_flag"))
 	{
-		memcpy(tempbuf,(unsigned char *)(UPDATE_FILE_START_ADDR - (2 * FLASH_PAGE_SIZE)),10);
+		memcpy(tempbuf,(unsigned char *)MPU_TIMEOUT_LOG_ADDR,10);
 		if (pOut && outlen)
 		{
 			templen = (tempbuf[6] << 24) + (tempbuf[7] << 16) + (tempbuf[8] << 8) + tempbuf[9];

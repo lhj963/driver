@@ -322,7 +322,7 @@ void *send_msg(S_MSG_TYPE msgtype,void *param,void *lparam,void *wparam)
 	case S_MSG_READ_PARAM:
 		if (param && lparam)
 		{
-			memcpy(param,(unsigned char *)(UPDATE_FILE_START_ADDR -  FLASH_PAGE_SIZE),
+			memcpy(param,(unsigned char *)PARAM_STORE_ADDR,
 					((INT32U)lparam > FLASH_PAGE_SIZE) ? FLASH_PAGE_SIZE : (INT32U)lparam);
 			//DBG_PrintBuf(LEVEL2,"[drv]read param:\r\n",param,(INT32U)lparam);
 		}
@@ -331,8 +331,17 @@ void *send_msg(S_MSG_TYPE msgtype,void *param,void *lparam,void *wparam)
 		if (param && lparam)
 		{
 		#if 1
-			stm32_flash_erase_sector((UPDATE_FILE_START_ADDR / FLASH_PAGE_SIZE) - 1);
-			stm32_flash_write(UPDATE_FILE_START_ADDR - FLASH_PAGE_SIZE,param,(INT32U)lparam);
+		{
+			unsigned int n = (INT32U)lparam;
+
+			/* One metadata page. Do not program into the following page. */
+			if (n > FLASH_PAGE_SIZE)
+			{
+				n = FLASH_PAGE_SIZE;
+			}
+			stm32_flash_erase_sector(PARAM_STORE_ADDR / FLASH_PAGE_SIZE);
+			stm32_flash_write(PARAM_STORE_ADDR,param,n);
+		}
 		#endif
 		}
 	break;

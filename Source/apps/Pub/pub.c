@@ -46,6 +46,13 @@ void ftp_data_arrive(void *pdat,unsigned int rlen)
 
 void ftp_download_ok(void)
 {
+	if ((file_offset == 0) || (file_offset & 1u))
+	{
+		set_update_status(UPDATE_STATUS_UPDATE_FAIL);
+		save_update_info();
+		DBG_Print(0,"FTP image rejected (len:%u).\r\n", file_offset);
+		return ;
+	}
 	set_update_status(UPDATE_STATUS_FILE_OK);
 	set_update_start_addr(UPDATE_APP_START_ADDR);
 	set_update_total_bytes(file_offset);
