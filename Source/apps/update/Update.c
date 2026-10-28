@@ -70,27 +70,46 @@ static void ota_erase_new_pages(unsigned int start, unsigned int len)
 	}
 }
 
+/* Byte reads. Even lengths that are not a multiple of 4 must still compare. */
 static int ota_readback_matches(unsigned int addr, const unsigned char *src, unsigned int len)
+{
+	unsigned int i = 0;
+	const volatile unsigned char *flash = (const volatile unsigned char *)addr;
+
+	for (i = 0; i < len; i++)
+	{
+		if (flash[i] != src[i])
+		{
+			return 0;
+		}
+	}
+	return 1;
+}
+
+static unsigned short ota_crc_flash(unsigned int addr, unsigned int len)
 {
 	unsigned char tmp[128];
 	unsigned int off = 0;
+	unsigned short crc = 0xFFFF;
+	const volatile unsigned char *flash = (const volatile unsigned char *)addr;
 
 	while (off < len)
 	{
 		unsigned int n = len - off;
+		unsigned int i = 0;
 
 		if (n > sizeof(tmp))
 		{
 			n = sizeof(tmp);
 		}
-		stm32_flash_read(addr + off, n, tmp, sizeof(tmp));
-		if (memcmp(tmp, src + off, n) != 0)
+		for (i = 0; i < n; i++)
 		{
-			return 0;
+			tmp[i] = flash[off + i];
 		}
+		crc = ota_crc16_update(crc, tmp, n);
 		off += n;
 	}
-	return 1;
+	return crc;
 }
 
 unsigned int get_ota_file_size(void)
@@ -108,10 +127,6 @@ int ota_write(void *buf,unsigned int len)
 	unsigned int start = 0;
 	const unsigned char *src = (const unsigned char *)buf;
 
-	if (s_ota_error)
-	{
-		return -1;
-	}
 	if ((buf == 0) || (len == 0))
 	{
 		return -1;
@@ -137,10 +152,12 @@ int ota_write(void *buf,unsigned int len)
 	stm32_flash_write(start, buf, len);
 	if (ota_readback_matches(start, src, len) == 0)
 	{
+		/* Not stored. Leave the offset so a retry of this even chunk can ACK. */
 		s_ota_error = 1;
 		return -1;
 	}
 
+	s_ota_error = 0;
 	s_ota_crc = ota_crc16_update(s_ota_crc, src, len);
 	ota_file_size += len;
 	return 0;
@@ -148,9 +165,6 @@ int ota_write(void *buf,unsigned int len)
 
 int ota_image_is_valid(void)
 {
-	unsigned char tmp[128];
-	unsigned int off = 0;
-	unsigned short crc = 0xFFFF;
 	unsigned int len = ota_file_size;
 
 	if (s_ota_error)
@@ -162,19 +176,7 @@ int ota_image_is_valid(void)
 		return 0;
 	}
 
-	while (off < len)
-	{
-		unsigned int n = len - off;
-
-		if (n > sizeof(tmp))
-		{
-			n = sizeof(tmp);
-		}
-		stm32_flash_read(UPDATE_FILE_START_ADDR + off, n, tmp, sizeof(tmp));
-		crc = ota_crc16_update(crc, tmp, n);
-		off += n;
-	}
-	return (crc == s_ota_crc) ? 1 : 0;
+	return (ota_crc_flash(UPDATE_FILE_START_ADDR, len) == s_ota_crc) ? 1 : 0;
 }
 
 void ota_download_finish(void)

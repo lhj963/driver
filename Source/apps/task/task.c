@@ -569,6 +569,7 @@ void task3(void)
 		set_main_power_vol(read_main_power_vol());
 		set_acc_status(read_acc_status());
 
+		migrate_param_store_once();
 		((void (*)())(APP_START_ADDR | 0x01))();
 	}
 	else

@@ -80,6 +80,7 @@ void bsp_init(void)
 
 	//¶¨Ê±1ms
 	SysTick_Config(100000 - 1);
+	migrate_param_store_once();
 }
 
 

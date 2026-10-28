@@ -320,6 +320,7 @@ void *send_msg(S_MSG_TYPE msgtype,void *param,void *lparam,void *wparam)
 	case S_MSG_GET_SERVER_PORT:
 		return (void *)SPGetServerPort((unsigned int)param);
 	case S_MSG_READ_PARAM:
+		migrate_param_store_once();
 		if (param && lparam)
 		{
 			memcpy(param,(unsigned char *)PARAM_STORE_ADDR,
@@ -328,6 +329,7 @@ void *send_msg(S_MSG_TYPE msgtype,void *param,void *lparam,void *wparam)
 		}
 	break;
 	case S_MSG_WRITE_PARAM:
+		migrate_param_store_once();
 		if (param && lparam)
 		{
 		#if 1
