@@ -18,9 +18,33 @@ extern "C" {
 #define DRIVER_SIZE								(48 * 1024)
 #define DRIVER_END_ADDR 						(DRIVER_START_ADDR + DRIVER_SIZE)
 
-//app层
+/* Internal flash (readme: GD32F305, 512KB), 2KB pages.
+ * 0x08000000 boot    16KB
+ * 0x08004000 driver  48KB
+ * 0x08010000 app     until the OTA slot
+ * 0x08030000 OTA image 188KB
+ * then one page each: update info, param store, MPU-timeout log.
+ * Update info must stay outside the boot window. Param and the
+ * timeout log must stay outside the app region that sits between
+ * APP_START and the OTA slot.
+ */
+#define MCU_FLASH_SIZE							(512 * 1024)
+#define MCU_FLASH_PAGE_SIZE						(2 * 1024)
+#define MCU_FLASH_END_ADDR						(BOOT_START_ADDR + MCU_FLASH_SIZE)
+
+//app层. Ends where the OTA slot begins (not the old 0x00040000 alias).
 #define APP_START_ADDR 							DRIVER_END_ADDR
-#define APP_END_ADDR 							0x00040000
+#define APP_END_ADDR 							(BOOT_START_ADDR + (192 * 1024))
+
+#define UPDATE_FILE_START_ADDR					APP_END_ADDR
+#define UPDATE_FILE_MAX_SIZE					(188 * 1024)
+#define UPDATE_FILE_END_ADDR					(UPDATE_FILE_START_ADDR + UPDATE_FILE_MAX_SIZE)
+
+#define UPDATE_INFO_START_ADDR					UPDATE_FILE_END_ADDR
+#define PARAM_STORE_ADDR						(UPDATE_INFO_START_ADDR + MCU_FLASH_PAGE_SIZE)
+#define MPU_TIMEOUT_LOG_ADDR					(PARAM_STORE_ADDR + MCU_FLASH_PAGE_SIZE)
+/* Parameters lived on this page before the metadata move (0x0802F800). */
+#define PARAM_STORE_LEGACY_ADDR					(UPDATE_FILE_START_ADDR - MCU_FLASH_PAGE_SIZE)
 
 #define SOFTWARE_INFO_OFFSET					0x1000
 #define SOFTWARE_INFO_ADDR 						(DRIVER_START_ADDR + SOFTWARE_INFO_OFFSET)
@@ -32,6 +56,23 @@ extern "C" {
 
 #define ADC_MAIN_POWER_ADC_TYPE					ADC1	//ADC主电源电压监测通道
 #define ADC_MAIN_POWER_CHANNEL					11
+
+/* Main-power scale used by read_main_power_vol(), in reported millivolts:
+ * reported = (adc * 3300 * 11) / 4096 + 550.
+ * Divider is 11:1. 550 mV is the series-diode offset baked into the
+ * reported value. The old "100K/560K = 10/66" note is not this circuit.
+ * Thresholds below are in the same reported millivolts.
+ * Boot stays blocked below 9.00V reported. Undervoltage (charger off,
+ * backup on) trips at 7.60V reported and restores only after the
+ * reported voltage recovers to the boot threshold.
+ */
+#define MAIN_POWER_ADC_SCALE					11
+#define MAIN_POWER_ADC_VREF_MV					3300
+#define MAIN_POWER_ADC_SHIFT					12
+#define MAIN_POWER_DIODE_MV						550
+#define MAIN_POWER_BOOT_MIN_MV					9000
+#define MAIN_POWER_UV_ENTER_MV					7600
+#define MAIN_POWER_UV_RECOVER_MV				MAIN_POWER_BOOT_MIN_MV
 
 #define ADC_BAT_ADC_TYPE						ADC1	//ADC电池电压监测通道
 #define ADC_BAT_CHANNEL							10

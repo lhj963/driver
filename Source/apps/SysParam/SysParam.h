@@ -109,24 +109,47 @@ typedef enum tagUpdateStatus
 #define UPDATE_WAY_TCP		2
 #define UPDATE_WAY_FTP		3
 
-typedef struct tagUpdateInfo
+/* Same packed record st_boot writes and checks at 0x0805F000.
+ * Magic bytes are 'U','P','D','1'. ulHeaderCrc is CRC-32 over every
+ * byte before that field. A C enum is not used for the status byte, so
+ * short-enums cannot move ulStartAddr. sizeof must stay 140.
+ */
+#define UPDATE_INFO_MAGIC				0x31445055u
+#define UPDATE_INFO_LAYOUT_VER			1u
+#define UPDATE_INFO_LAYOUT_BYTES		140u
+
+#if defined(__CC_ARM)
+#define UPDATE_INFO_PACKED __packed
+#define UPDATE_INFO_ATTR
+#else
+#define UPDATE_INFO_PACKED
+#define UPDATE_INFO_ATTR __attribute__((packed))
+#endif
+
+typedef UPDATE_INFO_PACKED struct tagUpdateInfo
 {
-	UpdateStatus eUpdateStatus;						//升级状态
-	INT8U ucUpdateWay;						//升级方式(xmodem FTP TCP等方式)
-	INT32U ulStartAddr;						//在FLASH中存放的起始地址
-	INT32U ulEndAddr;						//结束地址
-	INT32U ulTotalBytes;					//总大小
-	INT16U usTotalPackCnt;						//总包数
-	Date stStartTime;				//起始时间
-	INT32U ulStartTime;				//起始时间
-	Date stEndTime;					//结束时间
-	INT32U ulEndTime;				//结束时间
-	INT32U ulTakeTimes;				//FTP耗时多少
+	INT32U magic;
+	INT16U usLayoutBytes;
+	INT8U ucLayoutVersion;
+	INT8U eUpdateStatus;
+	INT8U ucUpdateWay;
+	INT8U ucReserved0;
+	INT16U usReserved1;
+	INT32U ulStartAddr;
+	INT32U ulEndAddr;
+	INT32U ulTotalBytes;
+	INT16U usTotalPackCnt;
+	Date stStartTime;
+	INT32U ulStartTime;
+	Date stEndTime;
+	INT32U ulEndTime;
+	INT32U ulTakeTimes;
 	INT8S szReportPhone[20];
 	INT8S szServerAddr[32];
 	INT16U usServerPort;
 	INT8S szUpdateFileName[32];
-}UpdateInfo;
+	INT32U ulHeaderCrc;
+} UPDATE_INFO_ATTR UpdateInfo;
 
 
 
@@ -625,6 +648,7 @@ extern INT16U get_update_server_port(void);
 extern void disp_update_info(void);
 extern void update_info_default(void);
 extern void check_update_status(void);
+extern void migrate_param_store_once(void);
 
 
 

@@ -7,6 +7,111 @@ unsigned int ota_file_size = 0;
 unsigned char s_page_buf[4096] = {0};
 unsigned int s_page_len = 0;
 
+/* CRC-16/CCITT-FALSE over bytes accepted into the OTA slot. */
+static unsigned short s_ota_crc = 0xFFFF;
+/* Sticky: a program that did not read back must not be marked FILE_OK. */
+static unsigned char s_ota_error = 0;
+
+typedef char ota_page_size_chk[(MCU_FLASH_PAGE_SIZE == FLASH_PAGE_SIZE) ? 1 : -1];
+typedef char ota_info_outside_boot[(UPDATE_INFO_START_ADDR >= BOOT_END_ADDR) ? 1 : -1];
+typedef char ota_info_after_image[(UPDATE_INFO_START_ADDR >= UPDATE_FILE_END_ADDR) ? 1 : -1];
+typedef char ota_param_after_image[(PARAM_STORE_ADDR >= UPDATE_FILE_END_ADDR) ? 1 : -1];
+typedef char ota_log_after_image[(MPU_TIMEOUT_LOG_ADDR >= UPDATE_FILE_END_ADDR) ? 1 : -1];
+typedef char ota_meta_inside_flash[(MPU_TIMEOUT_LOG_ADDR + MCU_FLASH_PAGE_SIZE <= MCU_FLASH_END_ADDR) ? 1 : -1];
+typedef char ota_slot_after_app[(UPDATE_FILE_START_ADDR == APP_END_ADDR) ? 1 : -1];
+
+static unsigned short ota_crc16_update(unsigned short crc, const unsigned char *p, unsigned int n)
+{
+	unsigned int i = 0;
+
+	while (n--)
+	{
+		crc ^= (unsigned short)(*p++) << 8;
+		for (i = 0; i < 8; i++)
+		{
+			if (crc & 0x8000)
+			{
+				crc = (unsigned short)((crc << 1) ^ 0x1021);
+			}
+			else
+			{
+				crc = (unsigned short)(crc << 1);
+			}
+		}
+	}
+	return crc;
+}
+
+static void ota_reset_image(void)
+{
+	s_ota_crc = 0xFFFF;
+	s_ota_error = 0;
+	ota_file_size = 0;
+}
+
+/* Erase every page the sequential write will program for the first time.
+ * A page already started (write begins past its base) stays erased-once
+ * so earlier bytes in that page are kept.
+ */
+static void ota_erase_new_pages(unsigned int start, unsigned int len)
+{
+	unsigned int end = start + len;
+	unsigned int page = start / FLASH_PAGE_SIZE;
+	unsigned int last = (end - 1) / FLASH_PAGE_SIZE;
+
+	for (; page <= last; page++)
+	{
+		unsigned int page_base = page * FLASH_PAGE_SIZE;
+
+		if (page_base >= start)
+		{
+			stm32_flash_erase_sector(page);
+		}
+	}
+}
+
+/* Byte reads. Even lengths that are not a multiple of 4 must still compare. */
+static int ota_readback_matches(unsigned int addr, const unsigned char *src, unsigned int len)
+{
+	unsigned int i = 0;
+	const volatile unsigned char *flash = (const volatile unsigned char *)addr;
+
+	for (i = 0; i < len; i++)
+	{
+		if (flash[i] != src[i])
+		{
+			return 0;
+		}
+	}
+	return 1;
+}
+
+static unsigned short ota_crc_flash(unsigned int addr, unsigned int len)
+{
+	unsigned char tmp[128];
+	unsigned int off = 0;
+	unsigned short crc = 0xFFFF;
+	const volatile unsigned char *flash = (const volatile unsigned char *)addr;
+
+	while (off < len)
+	{
+		unsigned int n = len - off;
+		unsigned int i = 0;
+
+		if (n > sizeof(tmp))
+		{
+			n = sizeof(tmp);
+		}
+		for (i = 0; i < n; i++)
+		{
+			tmp[i] = flash[off + i];
+		}
+		crc = ota_crc16_update(crc, tmp, n);
+		off += n;
+	}
+	return crc;
+}
+
 unsigned int get_ota_file_size(void)
 {
 	return ota_file_size;
@@ -17,31 +122,75 @@ void set_ota_file_size(unsigned int val)
 	ota_file_size = val;
 }
 
-void ota_write(void *buf,unsigned int len)
+int ota_write(void *buf,unsigned int len)
 {
+	unsigned int start = 0;
+	const unsigned char *src = (const unsigned char *)buf;
+
 	if ((buf == 0) || (len == 0))
 	{
-		return ;
+		return -1;
 	}
-	//file size to large
-	if ((get_ota_file_size() >= UPDATE_FILE_MAX_SIZE) || (len > (UPDATE_FILE_MAX_SIZE - get_ota_file_size())))
+	/* Halfword program. An odd length programs a pad byte and the next
+	 * chunk starts on an odd address, which the flash controller rejects.
+	 */
+	if ((len & 1u) || (ota_file_size & 1u))
 	{
-		return ;
+		return -1;
+	}
+	if ((UPDATE_FILE_START_ADDR & 1u) != 0)
+	{
+		return -1;
+	}
+	if ((ota_file_size >= UPDATE_FILE_MAX_SIZE) || (len > (UPDATE_FILE_MAX_SIZE - ota_file_size)))
+	{
+		return -1;
 	}
 
-	if (((UPDATE_FILE_START_ADDR + ota_file_size) % FLASH_PAGE_SIZE) == 0)
+	start = UPDATE_FILE_START_ADDR + ota_file_size;
+	ota_erase_new_pages(start, len);
+	stm32_flash_write(start, buf, len);
+	if (ota_readback_matches(start, src, len) == 0)
 	{
-		stm32_flash_erase_sector((UPDATE_FILE_START_ADDR + ota_file_size) / FLASH_PAGE_SIZE);
+		/* Not stored. Leave the offset so a retry of this even chunk can ACK. */
+		s_ota_error = 1;
+		return -1;
 	}
-	stm32_flash_write(UPDATE_FILE_START_ADDR + ota_file_size,buf,len);
 
+	s_ota_error = 0;
+	s_ota_crc = ota_crc16_update(s_ota_crc, src, len);
 	ota_file_size += len;
+	return 0;
+}
+
+int ota_image_is_valid(void)
+{
+	unsigned int len = ota_file_size;
+
+	if (s_ota_error)
+	{
+		return 0;
+	}
+	if ((len == 0) || (len & 1u) || (len > UPDATE_FILE_MAX_SIZE))
+	{
+		return 0;
+	}
+
+	return (ota_crc_flash(UPDATE_FILE_START_ADDR, len) == s_ota_crc) ? 1 : 0;
 }
 
 void ota_download_finish(void)
 {
 	Date dat = {0};
 	unsigned char *prtc = get_rtc_time();
+
+	if (ota_image_is_valid() == 0)
+	{
+		set_update_status(UPDATE_STATUS_UPDATE_FAIL);
+		save_update_info();
+		DBG_Print(0,"OTA image rejected (len:%u).\r\n", get_ota_file_size());
+		return ;
+	}
 
 	set_update_status(UPDATE_STATUS_FILE_OK);
 	set_update_start_addr(UPDATE_FILE_START_ADDR);
@@ -85,7 +234,7 @@ void ota_start(unsigned char update_way)
 	unsigned char *prtc = get_rtc_time();
 
 	s_page_len = 0;
-	ota_file_size = 0;
+	ota_reset_image();
 	//set_update_server(GetFtpServerAddr(),GetFtpServerPort());
 	//set_update_download_file_name(GetFtpDownloadFileName());
 
@@ -109,7 +258,7 @@ void ota_start(unsigned char update_way)
 
 void ota_stop(void)
 {
-	set_ota_file_size(0);
+	ota_reset_image();
 	set_update_status(UPDATE_STATUS_NO);
 	save_update_info();
 	DBG_Print(LEVEL0,"ota stop(cur way:%d)\r\n",get_update_way());

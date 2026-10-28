@@ -13,6 +13,9 @@
 
 
 OS_STK stk_task0[TASK0_STK_SIZE] = {0};
+
+/* Set when undervoltage has turned the charger off and backup on. */
+static unsigned char s_main_power_backup_latched = 0;
 //OS_STK stk_task1[TASK1_STK_SIZE] = {0};
 //OS_STK stk_task2[TASK2_STK_SIZE] = {0};
 OS_STK stk_task3[TASK3_STK_SIZE] = {0};
@@ -35,7 +38,11 @@ void wait_main_power(void)
 	while (1)
 	{
 		vol = read_main_power_vol();
-		if (vol >= 9000)
+		/* Same reported millivolts as read_main_power_vol(). Exits once
+		 * the supply recovers to the boot threshold; does not boot the
+		 * module while the reported voltage stays below it.
+		 */
+		if (vol >= MAIN_POWER_BOOT_MIN_MV)
 		{
 			break ;
 		}
@@ -76,12 +83,19 @@ void DBGTask(void)
 		update_tbox_status();
 		#if 1
 		rlen = read_main_power_vol();
-		if (rlen <= 7600)			//主电源断电 切换到备用电池供电
+		/* Trip at UV_ENTER. After the pins have been switched, hold
+		 * backup until the reported voltage recovers to the boot
+		 * threshold so a reading just above the trip point cannot
+		 * leave the charger off forever, and cannot chatter.
+		 */
+		if ((rlen <= MAIN_POWER_UV_ENTER_MV)
+			|| (s_main_power_backup_latched && (rlen < MAIN_POWER_UV_RECOVER_MV)))
 		{
 			main_power_off_callback pf = 0;
 
 			pin_low(CHARGE_EN_RCC,CHARGE_EN_PORT,CHARGE_EN_PIN);
 			pin_high(BAT_BACKUP_EN_RCC,BAT_BACKUP_EN_PORT,BAT_BACKUP_EN_PIN);
+			s_main_power_backup_latched = 1;
 			if (get_power_supply_mode() == 0)
 			{
 				set_power_supply_mode(1);
@@ -111,6 +125,12 @@ void DBGTask(void)
 		}
 		else
 		{
+			if (s_main_power_backup_latched)
+			{
+				pin_high(CHARGE_EN_RCC,CHARGE_EN_PORT,CHARGE_EN_PIN);
+				pin_low(BAT_BACKUP_EN_RCC,BAT_BACKUP_EN_PORT,BAT_BACKUP_EN_PIN);
+				s_main_power_backup_latched = 0;
+			}
 			set_power_supply_mode(0);
 		}
 		#endif
@@ -426,9 +446,9 @@ void DBGTask(void)
 				tempbuf[9] = temp;
 
 				#if 1
-				//记录mpu app崩溃时间
-				stm32_flash_erase_sector((UPDATE_FILE_START_ADDR / FLASH_PAGE_SIZE) - 2);
-				stm32_flash_write(UPDATE_FILE_START_ADDR - (2 * FLASH_PAGE_SIZE),tempbuf,10);
+				//记录mpu app崩溃时间 (metadata page, not the app/OTA gap)
+				stm32_flash_erase_sector(MPU_TIMEOUT_LOG_ADDR / FLASH_PAGE_SIZE);
+				stm32_flash_write(MPU_TIMEOUT_LOG_ADDR,tempbuf,10);
 				#endif
 
 				//4G模块重启
@@ -549,6 +569,7 @@ void task3(void)
 		set_main_power_vol(read_main_power_vol());
 		set_acc_status(read_acc_status());
 
+		migrate_param_store_once();
 		((void (*)())(APP_START_ADDR | 0x01))();
 	}
 	else

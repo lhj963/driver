@@ -159,12 +159,22 @@ static int hhsm_send_cmd(u8 *data, u32 len)
 			-3 : 其他错误
 			 > 0 读取到数据长度
 **************************************************************************/
+static unsigned int hhsm_clamp_u(unsigned int n, unsigned int limit)
+{
+	return (n > limit) ? limit : n;
+}
+
 static int hhsm_recv_data(u8 *data, u32 maxlen)
 {
 	int ret = -2;
 	unsigned short recv_msg_len = 0;	//有效数据的长度
 	unsigned short recv_len = 0;					//接收所有数据的长度
 	u8 temp[M_HHSM_SINGLE_DATA_LEN] = {0};
+
+	if ((data == 0) || (maxlen == 0))
+	{
+		return -2;
+	}
 
 	//crc错误重新接收的错误次数
 	u8 crc = 0;
@@ -207,55 +217,77 @@ Recv:
 
 			//DBG_PrintBuf(LEVEL_GPRS, "Ack Data:\r\n", temp, M_HHSM_SINGLE_DATA_LEN);
 		
-			recv_msg_len = (((unsigned short)temp[0]) << 8) | temp[1];
-			recv_msg_len += 1; //+1 是还有一个校验码
-			if (recv_msg_len > get_big_mem_size())
 			{
-				ret = -2;
-				crc_err_cnt = 0;
-				break;
+				/* Length is a chip-supplied 16-bit field. Add the checksum
+				 * in a wider type so 0xFFFF does not wrap to 0, and refuse
+				 * anything that does not fit the caller buffer.
+				 */
+				unsigned int msg_len = (((unsigned int)temp[0]) << 8) | temp[1];
+
+				msg_len += 1;
+				if ((msg_len == 0) || (msg_len > 0xFFFFu) || (msg_len > maxlen))
+				{
+					ret = -2;
+					crc_err_cnt = 0;
+					break;
+				}
+				recv_msg_len = (unsigned short)msg_len;
 			}
 
 			//DBG_Print(LEVEL_GPRS, "recv msg len:%x\r\n", recv_msg_len);
 
 			if (recv_msg_len <= (M_HHSM_SINGLE_DATA_LEN - M_HHSM_FRAME_HEAD_LEN))
 			{
+				if ((recv_len + recv_msg_len) > maxlen)
+				{
+					ret = -2;
+					break;
+				}
 				memcpy(&data[recv_len], &temp[M_HHSM_FRAME_HEAD_LEN], recv_msg_len);
 				recv_len += recv_msg_len;
 			}
 			else
 			{
-				memcpy(&data[recv_len], &temp[M_HHSM_FRAME_HEAD_LEN], M_HHSM_SINGLE_DATA_LEN - M_HHSM_FRAME_HEAD_LEN);
-				recv_len += M_HHSM_SINGLE_DATA_LEN - M_HHSM_FRAME_HEAD_LEN;
+				unsigned int chunk = M_HHSM_SINGLE_DATA_LEN - M_HHSM_FRAME_HEAD_LEN;
+				int copy_fail = 0;
+
+				if ((recv_len + chunk) > maxlen)
+				{
+					ret = -2;
+					break;
+				}
+				memcpy(&data[recv_len], &temp[M_HHSM_FRAME_HEAD_LEN], chunk);
+				recv_len += (unsigned short)chunk;
 
 				//循环读取接收的数据
 				while (recv_msg_len > recv_len)
 				{
+					unsigned int need = (unsigned int)recv_msg_len - recv_len;
+					unsigned int take = need;
+
 					memset(temp, 0, sizeof(temp));
-					//超过16个字节
-					if ((recv_msg_len - recv_len) >= M_HHSM_SINGLE_DATA_LEN)
+					if (take > M_HHSM_SINGLE_DATA_LEN)
 					{
-						if (s_hhsm_func.read)
-						{
-							s_hhsm_func.read(M_HHSM_SINGLE_DATA_LEN, temp, sizeof(temp));
-						}
-						hhsm_wait_busy_to_free();
-
-						memcpy(&data[recv_len], temp, M_HHSM_SINGLE_DATA_LEN);
-						recv_len += M_HHSM_SINGLE_DATA_LEN;
+						take = M_HHSM_SINGLE_DATA_LEN;
 					}
-					else
+					if ((recv_len + take) > maxlen)
 					{
-						if (s_hhsm_func.read)
-						{
-							s_hhsm_func.read((recv_msg_len - recv_len), temp, sizeof(temp));
-						}
-						hhsm_wait_busy_to_free();
-
-						memcpy(&data[recv_len], temp, recv_msg_len - recv_len);
-						recv_len = recv_msg_len;
+						copy_fail = 1;
 						break;
 					}
+					if (s_hhsm_func.read)
+					{
+						s_hhsm_func.read(take, temp, sizeof(temp));
+					}
+					hhsm_wait_busy_to_free();
+
+					memcpy(&data[recv_len], temp, take);
+					recv_len += (unsigned short)take;
+				}
+				if (copy_fail)
+				{
+					ret = -2;
+					break;
 				}
 			}
 
@@ -339,7 +371,7 @@ static int hhsm_send_cmd_data(u8 *data, u32 len, u8 *outdata, u32 maxlen)
 	do
 	{
 		if ((0 == data) || (0 == len) || (0 == outdata) || (len > M_HHSM_MAX_DATA_LEN)
-			|| (0 == maxlen) || (maxlen > get_big_mem_size()))
+			|| (0 == maxlen) || ((len + 5) > get_big_mem_size()))
 		{
 			DBG_Print(LEVEL_GPRS, "hhsm_send_cmd_data input data error\r\n");
 			break;
@@ -431,7 +463,7 @@ Send:
 	}
 
 	s_hhsm_send_fail_cnt = 0;
-
+
 	return ret;
 }
 
@@ -601,7 +633,7 @@ int hhsm_read_chip_id(u8 *data, int maxlen)
 		}
 
 		ret = hhsm_send_cmd_data(temp, sizeof(temp), data, maxlen);
-		if (-1 != ret)
+		if (ret >= 2)
 		{
 			if ((M_HHSM_ACK_SUCC_H == data[ret - 2]) && (M_HHSM_ACK_SUCC_L == data[ret - 1]))
 			{
@@ -754,7 +786,7 @@ int _hhsm_read_public_key(unsigned char idx,u8 *data, int maxlen)
 		}
 
 		ret = hhsm_send_cmd_data(temp, sizeof(temp), data, maxlen);
-		if (-1 != ret)
+		if (ret >= 2)
 		{
 			if ((M_HHSM_ACK_SUCC_L == data[0]) && (M_HHSM_ACK_SUCC_H == data[ret - 2])
 				&& (M_HHSM_ACK_SUCC_L == data[ret - 1]))
@@ -833,7 +865,7 @@ int hhsm_read_public_keyC(u8 *data, int maxlen)
 
 
 /**************************************************************************
-* 函  数: int hhsm_send_singal_data(u8 *data, u32 len, u8 last_flag, u8 *outdata)
+* 函  数: int hhsm_send_singal_data(u8 *data, u32 len, u8 last_flag, u8 *outdata, int outmax)
 * 描  述: 发送单包数据
 * 举  例: 	
 	
@@ -843,21 +875,27 @@ int hhsm_read_public_keyC(u8 *data, int maxlen)
 * 出  参: u8 *outdata：如果是最后一包，就需要输出结果数据
 * 返回值: int ， -1 : 失败，>= 0 成功
 **************************************************************************/
-static int hhsm_send_singal_data(u8 *data, u32 len, u8 last_flag, u8 *outdata)
+static int hhsm_send_singal_data(u8 *data, u32 len, u8 last_flag, u8 *outdata, int outmax)
 {
 	int ret = -1;
 	static u8 ack[80] = {0};
 
 	//发送数据
 	ret = hhsm_send_cmd_data(data, len, ack, sizeof(ack));
-	if (-1 != ret)
+	if (ret >= 2)
 	{
 		if ((M_HHSM_ACK_SUCC_H == ack[ret - 2]) && (M_HHSM_ACK_SUCC_L == ack[ret - 1]))
 		{
 			if (1 == last_flag)
 			{
-				memcpy(outdata, ack, ret - 2);
-				return ret - 2;
+				int n = ret - 2;
+
+				if ((outdata == 0) || (outmax <= 0) || (n > outmax) || (n > (int)sizeof(ack)))
+				{
+					return -1;
+				}
+				memcpy(outdata, ack, n);
+				return n;
 			}
 			else
 			{
@@ -906,7 +944,7 @@ int hhsm_read_calc_hash(u8 *data, u32 len, u8 *outdata, int maxlen)
 			memcpy(&temp[templen], data, len);
 			templen += (u8)(len & 0x7f);
 
-			ret = hhsm_send_singal_data(temp, templen, 1, outdata);
+			ret = hhsm_send_singal_data(temp, templen, 1, outdata, maxlen);
 			if (ret > 0)
 			{
 				break;
@@ -932,7 +970,7 @@ int hhsm_read_calc_hash(u8 *data, u32 len, u8 *outdata, int maxlen)
 					templen += (u8)((len - msglen) & 0x7f);
 
 					//发送
-					ret = hhsm_send_singal_data(temp, templen, 1, outdata);
+					ret = hhsm_send_singal_data(temp, templen, 1, outdata, maxlen);
 					if (ret > 0)
 					{
 						DBG_Print(LEVEL_GPRS, "hhsm_send_singal_data, 1, succ\r\n");
@@ -956,7 +994,7 @@ int hhsm_read_calc_hash(u8 *data, u32 len, u8 *outdata, int maxlen)
 					templen += 0x7f;
 
 					//发送
-					ret = hhsm_send_singal_data(temp, templen, 0, 0);
+					ret = hhsm_send_singal_data(temp, templen, 0, 0, 0);
 					if (0 == ret)
 					{
 						DBG_Print(LEVEL_GPRS, "hhsm_send_singal_data, 0, succ\r\n");
@@ -1065,7 +1103,7 @@ int hhsm_read_sign_data(u8 *data, u32 len, u8 *outdata, int maxlen)
 		templen += (ret & 0xff);
 		
 		ret = hhsm_send_cmd_data(temp, templen, outdata, maxlen);
-		if (-1 != ret)
+		if (ret >= 2)
 		{
 			if ((M_HHSM_ACK_SUCC_H == outdata[ret - 2]) && (M_HHSM_ACK_SUCC_L == outdata[ret - 1]))
 			{
@@ -1225,7 +1263,7 @@ int _hhsm_private_key_decrypt_encrypt(unsigned char idx,u8 type, u8 *data, u32 l
 	do
 	{
 		if ((0 == data) || (0 == len) || (len > M_HHSM_MAX_DATA_LEN)
-			|| (0 == outdata) || (0 == maxlen) || (maxlen > get_big_mem_size()))
+			|| (0 == outdata) || (maxlen <= 0))
 		{
 			DBG_Print(LEVEL_GPRS, "hhsm_private_key_decrypt_encrypt input error.\r\n");
 			break;
@@ -1275,7 +1313,7 @@ int _hhsm_private_key_decrypt_encrypt(unsigned char idx,u8 type, u8 *data, u32 l
 
 			//发送数据
 			ret = hhsm_send_cmd_data(temp, templen, ack, sizeof(ack));
-			if (-1 == ret)
+			if (ret < 2)
 			{
 				DBG_Print(LEVEL_GPRS, "hhsm_private_key_decrypt_encrypt hhsm_send_cmd_data fail.\r\n");
 				break;
@@ -1300,12 +1338,29 @@ int _hhsm_private_key_decrypt_encrypt(unsigned char idx,u8 type, u8 *data, u32 l
 
 			memset(recv_data, 0, sizeof(recv_data));
 			ret = hhsm_send_cmd_data(temp, templen, recv_data, sizeof(recv_data));
-			if (ret > 0)
+			if (ret >= 4)
 			{
 				if ((M_HHSM_ACK_SUCC_H == recv_data[ret - 2]) && (M_HHSM_ACK_SUCC_L == recv_data[ret - 1]))
 				{
-					ret = (int)(((unsigned short)(recv_data[0]) << 8) | recv_data[1]);
-					memcpy(outdata, &recv_data[2], ret);
+					unsigned int chip_len = (((unsigned int)recv_data[0]) << 8) | recv_data[1];
+					unsigned int avail = (unsigned int)ret - 4;
+					unsigned int room = (unsigned int)maxlen;
+					unsigned int n;
+
+					/* Chip length is not trusted past the bytes actually
+					 * received or the caller output buffer.
+					 */
+					n = hhsm_clamp_u(chip_len, avail);
+					n = hhsm_clamp_u(n, room);
+					if (n > (sizeof(recv_data) - 4))
+					{
+						n = sizeof(recv_data) - 4;
+					}
+					if (n)
+					{
+						memcpy(outdata, &recv_data[2], n);
+					}
+					ret = (int)n;
 					break;
 				}
 			}
@@ -1355,7 +1410,7 @@ int _hhsm_private_key_decrypt_encrypt(unsigned char idx,u8 type, u8 *data, u32 l
 
 				//发送数据
 				ret = hhsm_send_cmd_data(temp, templen, ack, sizeof(ack));
-				if (-1 != ret)
+				if (ret >= 2)
 				{
 					if ((M_HHSM_ACK_SUCC_H == ack[ret - 2]) && (M_HHSM_ACK_SUCC_L == ack[ret - 1]))
 					{
@@ -1393,7 +1448,7 @@ int _hhsm_private_key_decrypt_encrypt(unsigned char idx,u8 type, u8 *data, u32 l
 
 				//发送数据
 				ret = hhsm_send_cmd_data(temp, templen, ack, sizeof(ack));
-				if (-1 != ret)
+				if (ret >= 2)
 				{
 					if ((M_HHSM_ACK_SUCC_H == ack[ret - 2]) && (M_HHSM_ACK_SUCC_L == ack[ret - 1]))
 					{
@@ -1435,12 +1490,21 @@ int _hhsm_private_key_decrypt_encrypt(unsigned char idx,u8 type, u8 *data, u32 l
 
 				//发送读取报文指令
 				ret = hhsm_send_cmd_data(temp, templen, recv_data, sizeof(recv_data));
-				if (-1 != ret)
+				if (ret >= 2)
 				{
 					if ((M_HHSM_ACK_SUCC_H == recv_data[ret - 2]) && (M_HHSM_ACK_SUCC_L == recv_data[ret - 1]))
 					{
+						unsigned int chunk = 0;
+						unsigned int room = 0;
+						const u8 *src = recv_data;
+
 						if (0 == i)
 						{
+							if (ret < 4)
+							{
+								ret = -1;
+								break;
+							}
 							//第一次就把所有数据的长度传出来
 							recv_msg_len = (u16)(((u16)recv_data[0]) << 8 | recv_data[1]);
 							if (recv_msg_len > maxlen)
@@ -1451,15 +1515,22 @@ int _hhsm_private_key_decrypt_encrypt(unsigned char idx,u8 type, u8 *data, u32 l
 								break;
 							}
 
-							memcpy(&outdata[recv_len], &recv_data[2], ret - 4);
-							recv_len += ret - 4;
+							chunk = (unsigned int)ret - 4;
+							src = &recv_data[2];
 						}
 						else
 						{
-							//后面只传数据
-							memcpy(&outdata[recv_len], &recv_data[0], ret - 2);
-							recv_len += ret - 2;
+							chunk = (unsigned int)ret - 2;
+							src = &recv_data[0];
 						}
+						room = (recv_len >= maxlen) ? 0u : (unsigned int)(maxlen - recv_len);
+						chunk = hhsm_clamp_u(chunk, room);
+						chunk = hhsm_clamp_u(chunk, sizeof(recv_data));
+						if (chunk)
+						{
+							memcpy(&outdata[recv_len], src, chunk);
+						}
+						recv_len += (int)chunk;
 					}
 				}
 

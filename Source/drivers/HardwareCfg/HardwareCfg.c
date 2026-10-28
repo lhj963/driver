@@ -299,10 +299,11 @@ unsigned int read_main_power_vol(void)
 
 	main_power_adc = GetADCValue(ADC_MAIN_POWER_ADC_TYPE,ADC_MAIN_POWER_CHANNEL);
 	add_main_power_ad_val_to_list(main_power_adc);
-	//100K 560K = 10 / 66
-	//val = (main_power_adc * 330 * 66) >> 12;
-	val = (main_power_adc * 3300 * 11) >> 12;
-	val += 550;
+	/* 11:1 divider, 12-bit ADC, 3.3V ref, plus diode offset.
+	 * Same unit as MAIN_POWER_BOOT_MIN_MV / MAIN_POWER_UV_ENTER_MV.
+	 */
+	val = (main_power_adc * MAIN_POWER_ADC_VREF_MV * MAIN_POWER_ADC_SCALE) >> MAIN_POWER_ADC_SHIFT;
+	val += MAIN_POWER_DIODE_MV;
 
 	//DBG_Print(LEVEL0,"main_power_adc:%u\r\n",val);
 	return val;

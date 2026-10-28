@@ -923,7 +923,7 @@ INT8U get_update_way(void)
 
 UpdateStatus get_update_status(void)
 {
-	return stUpdateInfo.eUpdateStatus;					//升级状态
+	return (UpdateStatus)stUpdateInfo.eUpdateStatus;					//升级状态
 }
 
 
@@ -992,8 +992,105 @@ void set_update_total_bytes(unsigned int val)
 
 }
 
+typedef char update_info_layout_is_140[(sizeof(UpdateInfo) == UPDATE_INFO_LAYOUT_BYTES) ? 1 : -1];
+typedef char param_legacy_is_old_page[(PARAM_STORE_LEGACY_ADDR == 0x0802F800u) ? 1 : -1];
+
+/* Same CRC-32 as st_boot calc_crc32 (reflected poly 0xEDB88320). */
+static unsigned int update_crc32(unsigned int partial, const void *pbuf, unsigned int length)
+{
+	static unsigned int table[256];
+	static unsigned char ready = 0;
+	unsigned int crc = 0;
+	unsigned int i = 0;
+	unsigned int k = 0;
+	const unsigned char *buf = (const unsigned char *)pbuf;
+
+	if (ready == 0)
+	{
+		for (i = 0; i < 256; i++)
+		{
+			unsigned int val = i;
+
+			for (k = 0; k < 8; k++)
+			{
+				if (val & 1u)
+				{
+					val = 0xEDB88320u ^ (val >> 1);
+				}
+				else
+				{
+					val = val >> 1;
+				}
+			}
+			table[i] = val;
+		}
+		ready = 1;
+	}
+	if ((pbuf == 0) || (length == 0))
+	{
+		return 0;
+	}
+
+	crc = partial ^ 0xFFFFFFFFu;
+	for (i = 0; i < length; i++)
+	{
+		crc = table[(crc ^ buf[i]) & 0xFFu] ^ (crc >> 8);
+	}
+	return crc ^ 0xFFFFFFFFu;
+}
+
+static int update_status_known(unsigned int status)
+{
+	return (status == UPDATE_STATUS_NO)
+		|| (status == UPDATE_STATUS_START)
+		|| (status == UPDATE_STATUS_FILE_OK)
+		|| (status == UPDATE_STATUS_UPDATE_OK)
+		|| (status == UPDATE_STATUS_UPDATE_FAIL);
+}
+
+static int update_header_ok(const UpdateInfo *info)
+{
+	unsigned int crc = 0;
+
+	if (info == 0)
+	{
+		return 0;
+	}
+	if (info->magic != UPDATE_INFO_MAGIC)
+	{
+		return 0;
+	}
+	if (info->usLayoutBytes != (INT16U)sizeof(UpdateInfo))
+	{
+		return 0;
+	}
+	if (info->ucLayoutVersion != (INT8U)UPDATE_INFO_LAYOUT_VER)
+	{
+		return 0;
+	}
+	if (update_status_known(info->eUpdateStatus) == 0)
+	{
+		return 0;
+	}
+	crc = update_crc32(0, info, (unsigned int)(sizeof(UpdateInfo) - sizeof(info->ulHeaderCrc)));
+	return (info->ulHeaderCrc == crc) ? 1 : 0;
+}
+
+static void seal_update_info(void)
+{
+	stUpdateInfo.magic = UPDATE_INFO_MAGIC;
+	stUpdateInfo.usLayoutBytes = (INT16U)sizeof(UpdateInfo);
+	stUpdateInfo.ucLayoutVersion = (INT8U)UPDATE_INFO_LAYOUT_VER;
+	stUpdateInfo.ucReserved0 = 0;
+	stUpdateInfo.usReserved1 = 0;
+	stUpdateInfo.ulHeaderCrc = 0;
+	stUpdateInfo.ulHeaderCrc = update_crc32(0, &stUpdateInfo,
+		(unsigned int)(sizeof(stUpdateInfo) - sizeof(stUpdateInfo.ulHeaderCrc)));
+}
+
 void save_update_info(void)
 {
+	seal_update_info();
 	stm32_flash_erase_sector(UPDATE_INFO_START_ADDR / FLASH_PAGE_SIZE);
 	stm32_flash_write(UPDATE_INFO_START_ADDR,&stUpdateInfo,sizeof(stUpdateInfo));	
 }
@@ -1082,6 +1179,7 @@ void disp_update_info(void)
 
 void update_info_default(void)
 {
+	memset(&stUpdateInfo, 0, sizeof(stUpdateInfo));
 	stUpdateInfo.eUpdateStatus = UPDATE_STATUS_NO;					//升级状态
 	stUpdateInfo.ucUpdateWay = 0;						//升级方式(xmodem FTP TCP等方式)
 	stUpdateInfo.ulStartAddr = 0; 	//在FLASH中存放的起始地址
@@ -1113,17 +1211,13 @@ void check_update_status(void)
 {
 	memcpy(&stUpdateInfo,(unsigned char *)UPDATE_INFO_START_ADDR,sizeof(stUpdateInfo));
 
-	if ((stUpdateInfo.eUpdateStatus != UPDATE_STATUS_NO)
-		&& (stUpdateInfo.eUpdateStatus != UPDATE_STATUS_START)
-		&& (stUpdateInfo.eUpdateStatus != UPDATE_STATUS_FILE_OK)
-		&& (stUpdateInfo.eUpdateStatus != UPDATE_STATUS_UPDATE_OK)
-		&& (stUpdateInfo.eUpdateStatus != UPDATE_STATUS_UPDATE_FAIL)
-		)
+	if (update_header_ok(&stUpdateInfo) == 0)
 	{
-		/* 出来的参数有误 */
-		//update_info_default();
+		/* Blank flash and records without magic/CRC are not an update. */
+		update_info_default();
+		return ;
 	}
-	else if (stUpdateInfo.eUpdateStatus == UPDATE_STATUS_UPDATE_OK)
+	if (stUpdateInfo.eUpdateStatus == UPDATE_STATUS_UPDATE_OK)
 	{
 		/* 升级完成 */
 		//stUpdateInfo.eUpdateStatus = UPDATE_STATUS_NO;
@@ -1142,7 +1236,49 @@ void check_update_status(void)
 	disp_update_info();
 }
 
+static int flash_page_is_blank(unsigned int addr)
+{
+	unsigned int i = 0;
+	const unsigned char *p = (const unsigned char *)addr;
 
+	for (i = 0; i < FLASH_PAGE_SIZE; i++)
+	{
+		if (p[i] != 0xFFu)
+		{
+			return 0;
+		}
+	}
+	return 1;
+}
+
+/* One-shot copy of the pre-move parameter page. The legacy page is not erased. */
+void migrate_param_store_once(void)
+{
+	static unsigned char done = 0;
+	static unsigned char page[FLASH_PAGE_SIZE];
+
+	if (done)
+	{
+		return ;
+	}
+	done = 1;
+	if (PARAM_STORE_ADDR == PARAM_STORE_LEGACY_ADDR)
+	{
+		return ;
+	}
+	if (flash_page_is_blank(PARAM_STORE_ADDR) == 0)
+	{
+		return ;
+	}
+	if (flash_page_is_blank(PARAM_STORE_LEGACY_ADDR))
+	{
+		return ;
+	}
+
+	memcpy(page, (const unsigned char *)PARAM_STORE_LEGACY_ADDR, FLASH_PAGE_SIZE);
+	stm32_flash_erase_sector(PARAM_STORE_ADDR / FLASH_PAGE_SIZE);
+	stm32_flash_write(PARAM_STORE_ADDR, page, FLASH_PAGE_SIZE);
+}
 
 void LoadUserParam(void)
 {
