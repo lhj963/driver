@@ -1,0 +1,48 @@
+#ifndef __STORE_MAP_H__
+#define __STORE_MAP_H__
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+//存储分配映射表 以扇区为单位进行分配
+#define ONE_SECTOR_SIZE 			(128 * 1024)
+
+//升级文件信息记录区
+#define	UPDATE_INFO_START_SECTOR	0
+#define UPDATE_INFO_SECTOR_CNT      1
+
+//升级文件存放区
+#define	UPDATE_APP_START_SECTOR		(UPDATE_INFO_START_SECTOR + UPDATE_INFO_SECTOR_CNT)		//升级文件存放的起始扇区
+#define UPDATE_APP_SECTOR_CNT       4			//升级文件占用扇区个数
+#define UPDATE_APP_START_ADDR		(UPDATE_APP_START_SECTOR * ONE_SECTOR_SIZE)
+#define UPDATE_APP_END_ADDR			((UPDATE_APP_START_SECTOR + UPDATE_APP_SECTOR_CNT) * ONE_SECTOR_SIZE)
+
+#define	IDX_START_SECTOR			(UPDATE_APP_START_SECTOR + UPDATE_APP_SECTOR_CNT)
+#define IDX_SECTOR_CNT      		2
+
+
+//用户参数存放区
+#define SYSPARAM_START_SECTOR		(IDX_START_SECTOR + IDX_SECTOR_CNT)	//用户参数起始扇区	
+#define SYSPARAM_SECTOR_CNT       	2									//用户参数占用扇区个数
+
+//日志记录
+#define LOG_RECORD_START_SECTOR		(SYSPARAM_START_SECTOR + SYSPARAM_SECTOR_CNT)	//log记录起始扇区	
+#define LOG_RECORD_SECTOR_CNT		80						//log记录占用扇区个数
+
+//事件记录
+#define EVENT_RECORD_START_SECTOR	(LOG_RECORD_START_SECTOR + LOG_RECORD_SECTOR_CNT)	
+#define EVENT_RECORD_SECTOR_CNT		2
+
+//位置信息
+#define POSINFO_START_SECTOR		(EVENT_RECORD_START_SECTOR + EVENT_RECORD_SECTOR_CNT)	
+#define POSINFO_SECTOR_CNT			1
+
+#define TEST_START_SECTOR			(POSINFO_START_SECTOR + POSINFO_SECTOR_CNT)	
+#define TEST_SECTOR_CNT				1
+
+
+#ifdef __cplusplus
+}
+#endif
+#endif

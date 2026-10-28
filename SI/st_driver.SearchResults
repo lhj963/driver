@@ -1,0 +1,5 @@
+---- s_mpu_buf Matches (6 in 1 files) ----
+Task.c (f:\project\bysd_driver\st_driver\source\apps\task):	static unsigned char s_mpu_buf[2048 + 384] = {0};
+Task.c (f:\project\bysd_driver\st_driver\source\apps\task):			memset(s_mpu_buf,0,sizeof(s_mpu_buf));
+Task.c (f:\project\bysd_driver\st_driver\source\apps\task):			rlen = usart_read(0,s_mpu_buf,sizeof(s_mpu_buf),(unsigned int)-1);
+Task.c (f:\project\bysd_driver\st_driver\source\apps\task):				tccp_unpack(s_mpu_buf,rlen,analyze_mpu_data,mpu_error_data);
