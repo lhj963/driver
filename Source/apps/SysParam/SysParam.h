@@ -79,7 +79,19 @@ typedef enum tagEngineType
 	EngineType_MAX,
 }EngineType;
 
-typedef struct tagDate
+/* ARMCC #1031: every struct nested in packed UpdateInfo must itself be
+ * packed. Same qualifier as tagUpdateInfo. Six byte fields, so this does
+ * not change sizeof(Date) or the 140-byte UPD1 record.
+ */
+#if defined(__CC_ARM)
+#define UPDATE_INFO_PACKED __packed
+#define UPDATE_INFO_ATTR
+#else
+#define UPDATE_INFO_PACKED
+#define UPDATE_INFO_ATTR __attribute__((packed))
+#endif
+
+typedef UPDATE_INFO_PACKED struct tagDate
 {
 	INT8U year;
 	INT8U month;
@@ -87,7 +99,7 @@ typedef struct tagDate
 	INT8U hour;
 	INT8U min;
 	INT8U sec;
-}Date;
+} UPDATE_INFO_ATTR Date;
 
 typedef enum tagUpdateResult
 {
@@ -117,14 +129,6 @@ typedef enum tagUpdateStatus
 #define UPDATE_INFO_MAGIC				0x31445055u
 #define UPDATE_INFO_LAYOUT_VER			1u
 #define UPDATE_INFO_LAYOUT_BYTES		140u
-
-#if defined(__CC_ARM)
-#define UPDATE_INFO_PACKED __packed
-#define UPDATE_INFO_ATTR
-#else
-#define UPDATE_INFO_PACKED
-#define UPDATE_INFO_ATTR __attribute__((packed))
-#endif
 
 typedef UPDATE_INFO_PACKED struct tagUpdateInfo
 {
